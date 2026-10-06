@@ -24,6 +24,11 @@ input,select{width:100%;padding:9px;border-radius:8px;border:1px solid var(--lin
 .qtext{font-size:1.05rem;font-weight:600;background:var(--bg);padding:10px;border-radius:10px;}
 .muted{color:var(--muted);font-size:.85rem;}
 .overflow{overflow-x:auto;} ul{padding-left:18px;}
+.stbl{width:100%;font-size:.78rem;border-collapse:collapse;border:1px solid var(--line);}
+.stbl th,.stbl td{border:1px solid var(--line);padding:7px 8px;text-align:left;}
+.stbl th{background:var(--accent);color:#fff;font-weight:700;position:sticky;top:0;}
+.stbl tr:nth-child(even) td{background:rgba(124,58,237,.06);}
+.stbl td.ok{color:var(--green);font-weight:700;} .stbl td.bad{color:var(--red);font-weight:700;}
 @keyframes pop{0%{transform:scale(.6);opacity:0}60%{transform:scale(1.15)}100%{transform:scale(1);opacity:1}}
 .big-winner{position:relative;overflow:hidden;text-align:center;background:linear-gradient(160deg,var(--accent),var(--accent2));color:#fff;padding:34px 12px;border-radius:18px;
   box-shadow:0 0 0 3px rgba(255,215,0,.55), 0 0 40px 8px rgba(255,215,0,.35); animation:pop .6s ease-out, glowPulse 1.8s ease-in-out infinite;}
@@ -41,12 +46,17 @@ input,select{width:100%;padding:9px;border-radius:8px;border:1px solid var(--lin
 @keyframes sweep{0%{left:-60%;}100%{left:130%;}}
 @keyframes glowPulse{0%,100%{box-shadow:0 0 0 3px rgba(255,215,0,.55),0 0 40px 8px rgba(255,215,0,.32);}50%{box-shadow:0 0 0 3px rgba(255,215,0,.85),0 0 60px 14px rgba(255,215,0,.55);}}
 @keyframes twinkle{0%,100%{opacity:.2;transform:scale(.7) rotate(0deg);}50%{opacity:1;transform:scale(1.25) rotate(20deg);}}
-.winmini{position:relative;border-radius:14px;padding:12px 6px;text-align:center;animation:pop .5s ease-out;
-  box-shadow:0 0 0 2px rgba(255,215,0,.5), 0 0 16px 2px rgba(255,215,0,.3);}
+.winmini{position:relative;overflow:hidden;border-radius:14px;padding:14px 6px;text-align:center;
+  animation:pop .5s ease-out, glowPulse 1.8s ease-in-out infinite;
+  box-shadow:0 0 0 2px rgba(255,215,0,.6), 0 0 16px 3px rgba(255,215,0,.35);}
+.winmini::before{content:'';position:absolute;top:0;left:-60%;width:40%;height:100%;
+  background:linear-gradient(120deg,transparent,rgba(255,255,255,.35),transparent);transform:skewX(-20deg);animation:sweep 2.6s ease-in-out infinite;pointer-events:none;}
+.winmini .mcrown{font-size:1.3rem;animation:crownPulse 1.3s ease-in-out infinite;display:inline-block;}
 .winmini .mlbl{font-size:.72rem;font-weight:900;letter-spacing:.5px;text-transform:uppercase;
   background:linear-gradient(90deg,#fff6c8,#ffd700,#fff6c8);background-size:200% auto;-webkit-background-clip:text;background-clip:text;color:transparent;
   animation:shimmer 2.4s linear infinite;}
-.winmini .mav{font-size:2rem;margin:4px 0 2px;} .winmini .mnm{font-size:1.1rem;font-weight:800;color:#fff;} .winmini .mzn{font-size:.7rem;color:rgba(255,255,255,.85);}
+.winmini .mav{font-size:2rem;margin:4px 0 2px;animation:pop .8s ease-out;} .winmini .mnm{font-size:1.1rem;font-weight:800;color:#fff;} .winmini .mzn{font-size:.7rem;color:rgba(255,255,255,.85);}
+.winmini .mspark{position:absolute;font-size:.9rem;animation:twinkle 1.6s ease-in-out infinite;pointer-events:none;}
 .numpop{text-align:center;background:linear-gradient(160deg,#7c3aed,#f59e0b);color:#fff;border-radius:22px;padding:30px 20px;
   box-shadow:0 0 0 3px rgba(255,215,0,.6), 0 0 50px 10px rgba(255,215,0,.4); animation:popBig .45s cubic-bezier(.17,.89,.32,1.49);}
 .numpop .lbl{font-size:1.1rem;font-weight:700;letter-spacing:1px;opacity:.9;text-transform:uppercase;}
@@ -126,8 +136,10 @@ function playerResults(pname){
   const LINES=(()=>{const L=[];for(let x=0;x<5;x++)L.push([0,1,2,3,4].map(c=>x*5+c));for(let x=0;x<5;x++)L.push([0,1,2,3,4].map(y=>y*5+x));L.push([0,6,12,18,24]);L.push([4,8,12,16,20]);return L;})();
   const correctRows=LINES.filter(line=>line.every(ci=>cellState[ci]==='green')).length;
   const correctCount=cellState.filter(s=>s==='green').length;
+  const wrongCount=cellState.filter(s=>s==='red').length;
+  const netScore=correctCount-wrongCount;
   const fullHouse=cellState.every(s=>s==='green');
-  return {cellState,correctRows,correctCount,fullHouse};
+  return {cellState,correctRows,correctCount,wrongCount,netScore,fullHouse};
 }
 function winnerBannerHTML(r){
   const w=r.winners||{}; const step=r.revealStep||0;
@@ -147,7 +159,9 @@ function winnerBannerHTML(r){
     return `<div class="card"><div class="fireworks">🎆🎉🎇👑🎊</div><h2 style="text-align:center">🏆 બધા Winners</h2><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
     ${WINNER_ORDER.map((k,i)=>{const name=w[k]; const pd=name?r.players[name]:null;
       return `<div class="winmini" style="background:${colors[i%colors.length]}">
-      <div class="mlbl">${esc(WINNER_LABELS[k])}</div><div class="mav">${pd?pd.avatar:'❓'}</div>
+      <span class="mspark" style="top:4px;left:6px;animation-delay:${(i*.15)}s">✨</span>
+      <span class="mspark" style="bottom:4px;right:6px;animation-delay:${(i*.15+.4)}s">⭐</span>
+      <div class="mcrown">👑</div><div class="mlbl">${esc(WINNER_LABELS[k])}</div><div class="mav">${pd?pd.avatar:'❓'}</div>
       <div class="mnm">${name?esc(name):'—'}</div><div class="mzn">${pd&&pd.zone?esc(pd.zone):''}</div></div>`;
     }).join('')}</div></div>`;
   }
@@ -221,13 +235,15 @@ function render(){
     ${step>WINNER_ORDER.length && r.winners && r.winners.bonus===state.name?'<div style="font-size:1.05rem">⭐ તમે Bonus Winner છો!</div>':''}
     </div>`;
     const revMap={}; Object.entries(p.marks).forEach(([ci,qi])=>{revMap[qi]=+ci;});
-    body+=`<div class="card overflow"><h2>તમારો Summary (${res.correctCount} Correct / ${res.cellState.filter(s=>s==='red').length} Wrong)</h2>
-    <table style="width:100%;font-size:.78rem;border-collapse:collapse">
-    <tr><th align="left">#</th><th align="left">Question</th><th align="left">તમારો જવાબ</th><th align="left">સાચો જવાબ</th><th>Result</th></tr>
+    body+=`<div class="card overflow"><h2>તમારો Summary (${res.correctCount} Correct / ${res.wrongCount} Wrong)</h2>
+    <div class="muted" style="margin-bottom:6px">Net Score: <b style="color:${res.netScore<0?'#dc2626':'#16a34a'}">${res.netScore}</b> (ખોટા Click દીઠ -1 — ખોટો Guess ન કરો!)</div>
+    <table class="stbl">
+    <tr><th>#</th><th>Question</th><th>તમારો જવાબ</th><th>સાચો જવાબ</th><th>Result</th></tr>
     ${r.usedIdx.map(qi=>{
       const ci=revMap[qi]; const given=ci!==undefined?p.card[ci]:'—';
       const ok=ci!==undefined && r.questions[qi].a===given;
-      return `<tr><td>${qi+1}</td><td>${esc(r.questions[qi].q)}</td><td>${esc(given)}</td><td>${ok?'—':esc(r.questions[qi].a)}</td><td align="center">${ci===undefined?'—':(ok?'✅':'❌')}</td></tr>`;
+      const cls=ci===undefined?'':(ok?'ok':'bad');
+      return `<tr><td>${qi+1}</td><td>${esc(r.questions[qi].q)}</td><td>${esc(given)}</td><td>${ok?'—':esc(r.questions[qi].a)}</td><td align="center" class="${cls}">${ci===undefined?'—':(ok?'✅':'❌')}</td></tr>`;
     }).join('')}
     </table></div>`;
   }
@@ -235,6 +251,7 @@ function render(){
 }
 setInterval(()=>{ if(state.room && state.room.status==='question') render(); },1000);
 render();
+if('serviceWorker' in navigator){ navigator.serviceWorker.getRegistrations().then(rs=>rs.forEach(r=>r.unregister())); caches && caches.keys && caches.keys().then(ks=>ks.forEach(k=>caches.delete(k))); }
 </script>
 </body>
 </html>
