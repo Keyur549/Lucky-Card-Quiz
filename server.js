@@ -94,8 +94,10 @@ function playerResults(room, pname){
   for (let ci=0; ci<25; ci++) if (cellState[ci]==='none' && usedAnswers.includes(p.card[ci])) cellState[ci]='yellow';
   const correctRows = LINES.filter(line => line.every(ci=>cellState[ci]==='green')).length;
   const correctCount = cellState.filter(s=>s==='green').length;
+  const wrongCount = cellState.filter(s=>s==='red').length;
+  const netScore = correctCount - wrongCount; // negative marking: each wrong click costs 1 point
   const fullHouse = cellState.every(s=>s==='green');
-  return { cellState, correctRows, correctCount, fullHouse };
+  return { cellState, correctRows, correctCount, wrongCount, netScore, fullHouse };
 }
 function computeWinners(room){
   const winners = {};
@@ -113,7 +115,7 @@ function computeWinners(room){
   let bonus=null;
   for (const [name,p] of Object.entries(room.players)){
     const res = playerResults(room,name);
-    if (!bonus || res.correctCount>bonus.score || (res.correctCount===bonus.score && p.joinedAt<bonus.ts)) bonus={name,score:res.correctCount,ts:p.joinedAt};
+    if (!bonus || res.netScore>bonus.score || (res.netScore===bonus.score && p.joinedAt<bonus.ts)) bonus={name,score:res.netScore,ts:p.joinedAt};
   }
   winners.bonus = bonus && bonus.score>0 ? bonus.name : null;
   return winners;
@@ -161,7 +163,8 @@ io.on('connection', (socket) => {
 
   socket.on('host:start', ({code}) => { const r=rooms[code]; if(!r) return; r.status='active'; broadcast(code); });
 
-  const SPIN_MS=2600, REVEAL_MS=1600; // must match the host wheel-animation + number-popup durations
+  const REVEAL_MS=1600;       // how long the big number popup stays up before the question appears
+  const SPIN_SAFETY_MS=6000;  // safety net only — if host's browser never confirms, auto-advance so the game can't get stuck
   socket.on('host:spin', ({code}) => {
     const r = rooms[code]; if(!r) return;
     if(r.status!=='active' && r.status!=='locked') return; // ignore duplicate/racing spin clicks — fixes skipped questions
@@ -170,15 +173,23 @@ io.on('connection', (socket) => {
     const idx = avail[Math.floor(Math.random()*avail.length)];
     r.status='spinning'; r.curIdx=idx; r.usedIdx=[...r.usedIdx, idx]; r.timerEnd=null;
     broadcast(code);
+    // Safety net only: if the host's own wheel never confirms completion (tab closed, crash, etc.),
+    // reveal anyway after a generous timeout so the game never gets permanently stuck.
     setTimeout(()=>{
       const rr=rooms[code]; if(!rr||rr.status!=='spinning'||rr.curIdx!==idx) return;
-      rr.status='revealing'; broadcast(code);
-      setTimeout(()=>{
-        const rrr=rooms[code]; if(!rrr||rrr.status!=='revealing'||rrr.curIdx!==idx) return;
-        rrr.status='question'; rrr.timerEnd=Date.now()+30000; broadcast(code);
-      }, REVEAL_MS);
-    }, SPIN_MS);
+      advanceToRevealing(code, idx);
+    }, SPIN_SAFETY_MS);
   });
+  function advanceToRevealing(code, idx){
+    const r=rooms[code]; if(!r||r.status!=='spinning'||r.curIdx!==idx) return;
+    r.status='revealing'; broadcast(code);
+    setTimeout(()=>{
+      const rr=rooms[code]; if(!rr||rr.status!=='revealing'||rr.curIdx!==idx) return;
+      rr.status='question'; rr.timerEnd=Date.now()+30000; broadcast(code);
+    }, REVEAL_MS);
+  }
+  // Host's own wheel tells us exactly when its CSS animation visually finished — no guessing, no drift.
+  socket.on('host:spinComplete', ({code, idx}) => { advanceToRevealing(code, idx); });
 
   socket.on('host:end', ({code}) => { const r=rooms[code]; if(!r) return; r.status='ended'; broadcast(code); });
 
