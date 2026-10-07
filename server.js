@@ -1,14 +1,48 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
+const { MongoClient } = require('mongodb');
+const nodemailer = require('nodemailer');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 app.use(express.static('public'));
+app.use(express.json({limit:'2mb'}));
 
 const HOST_ID = process.env.HOST_ID || 'admin';
 const HOST_PW = process.env.HOST_PW || 'gyan2026';
+
+// ---- Persistent storage (player profiles + game history) ----
+// Set MONGODB_URI as an environment variable (free MongoDB Atlas cluster) to enable this.
+// Without it, the game still works fully — login/profile/history are just disabled.
+const MONGODB_URI = process.env.MONGODB_URI;
+let db = null;
+async function connectDB(){
+  if (!MONGODB_URI) { console.log('MONGODB_URI not set — player login/profile/history disabled.'); return; }
+  try{
+    const client = new MongoClient(MONGODB_URI);
+    await client.connect();
+    db = client.db('gyanshodh');
+    await db.collection('players').createIndex({contact:1}, {unique:true});
+    console.log('MongoDB connected — player profiles/history enabled.');
+  }catch(e){ console.log('MongoDB connection failed:', e.message); }
+}
+connectDB();
+
+// ---- Email OTP (free, via your own Gmail App Password) ----
+// Set EMAIL_USER and EMAIL_PASS as environment variables to enable this.
+const EMAIL_USER = process.env.EMAIL_USER;
+const EMAIL_PASS = process.env.EMAIL_PASS;
+const mailer = (EMAIL_USER && EMAIL_PASS) ? nodemailer.createTransport({
+  service: 'gmail',
+  auth: { user: EMAIL_USER, pass: EMAIL_PASS }
+}) : null;
+if (!mailer) console.log('EMAIL_USER/EMAIL_PASS not set — OTP email sending disabled.');
+
+const otpStore = {}; // contact(email) -> {code, expiresAt}
+function genOtp(){ return String(Math.floor(100000 + Math.random()*900000)); }
+setInterval(()=>{ const now=Date.now(); for(const k in otpStore) if(otpStore[k].expiresAt<now) delete otpStore[k]; }, 60000);
 
 const DEFAULT_QA = [
  ['જીવને માયામાંથી તારીને ભગવાનના દિવ્ય સ્વરૂપમાં જોડવા માટે સંતો દ્વારા અખંડ કથા-વાર્તા અને વિચરણ કરીને કરવામાં આવતા ભારે આધ્યાત્મિક પરિશ્રમને શું કહેવાય?','દાખડો'],
@@ -102,15 +136,21 @@ function playerResults(room, pname){
 function computeWinners(room){
   const winners = {};
   for (const cat of ['line1','line2','line3','line4','line5','full']){
-    let best=null;
+    let best=null, tied=[];
     for (const [name,p] of Object.entries(room.players)){
       if (!p.claims || !p.claims[cat]) continue;
       const res = playerResults(room,name);
       const need = cat==='full'?null:+cat.replace('line','');
       const valid = cat==='full' ? res.fullHouse : res.correctRows>=need;
-      if (valid){ const ts=p.claims[cat].ts; if(!best||ts<best.ts) best={name,ts}; }
+      if (valid){
+        const ts=p.claims[cat].ts;
+        if(!best || ts<best.ts){ best={name,ts}; tied=[name]; }
+        else if(ts===best.ts){ tied.push(name); }
+      }
     }
     winners[cat] = best?best.name:null;
+    winners[cat+'_ts'] = best?best.ts:null;
+    winners[cat+'_tie'] = tied.length>1 ? tied : null; // more than one player claimed validly at the exact same moment
   }
   let bonus=null;
   for (const [name,p] of Object.entries(room.players)){
@@ -118,6 +158,7 @@ function computeWinners(room){
     if (!bonus || res.netScore>bonus.score || (res.netScore===bonus.score && p.joinedAt<bonus.ts)) bonus={name,score:res.netScore,ts:p.joinedAt};
   }
   winners.bonus = bonus && bonus.score>0 ? bonus.name : null;
+  winners.bonus_score = bonus && bonus.score>0 ? bonus.score : null;
   return winners;
 }
 function publicRoom(room){
@@ -139,6 +180,50 @@ setInterval(() => {
 }, 1000);
 
 io.on('connection', (socket) => {
+  socket.on('auth:requestOtp', async ({contact}, cb) => {
+    contact = (contact||'').trim().toLowerCase();
+    if(!contact || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(contact)){ cb&&cb({ok:false, error:'સાચો Email Address નાખો.'}); return; }
+    if(!mailer){ cb&&cb({ok:false, error:'Email service setup નથી (Host એ EMAIL_USER/EMAIL_PASS set કરવા જોઈએ).'}); return; }
+    const code = genOtp();
+    otpStore[contact] = {code, expiresAt: Date.now()+5*60*1000};
+    try{
+      await mailer.sendMail({
+        from: EMAIL_USER, to: contact,
+        subject: 'જ્ઞાન શોધ Quiz — તમારો OTP',
+        text: `તમારો OTP: ${code}\n(5 મિનિટ માટે valid છે. કોઈને શેર ન કરો.)`
+      });
+      cb&&cb({ok:true});
+    }catch(e){ cb&&cb({ok:false, error:'OTP મોકલવામાં Error આવી: '+e.message}); }
+  });
+
+  socket.on('auth:verifyOtp', async ({contact, code}, cb) => {
+    contact = (contact||'').trim().toLowerCase();
+    const entry = otpStore[contact];
+    if(!entry || entry.code!==String(code) || Date.now()>entry.expiresAt){ cb&&cb({ok:false, error:'OTP ખોટો છે અથવા Expire થઈ ગયો.'}); return; }
+    delete otpStore[contact];
+    let profile = {contact, name:'', avatar:''};
+    if(db){
+      const found = await db.collection('players').findOne({contact});
+      if(found) profile = found;
+      else await db.collection('players').insertOne({...profile, createdAt:Date.now()});
+    }
+    cb&&cb({ok:true, profile});
+  });
+
+  socket.on('profile:update', async ({contact, name, avatar}, cb) => {
+    if(!db){ cb&&cb({ok:false, error:'Database setup નથી — profile save નહિ થાય.'}); return; }
+    contact=(contact||'').trim().toLowerCase();
+    await db.collection('players').updateOne({contact}, {$set:{name, avatar, updatedAt:Date.now()}}, {upsert:true});
+    cb&&cb({ok:true});
+  });
+
+  socket.on('history:get', async ({contact}, cb) => {
+    if(!db){ cb&&cb({ok:true, history:[]}); return; }
+    contact=(contact||'').trim().toLowerCase();
+    const history = await db.collection('game_history').find({contact}).sort({playedAt:-1}).limit(50).toArray();
+    cb&&cb({ok:true, history});
+  });
+
   socket.on('subscribe', ({code}, cb) => {
     if (rooms[code]){ socket.join(code); cb && cb({ok:true, room: publicRoom(rooms[code])}); }
     else cb && cb({ok:false, error:'Room code મળ્યો નહિ.'});
@@ -197,6 +282,26 @@ io.on('connection', (socket) => {
     const r = rooms[code]; if(!r) return;
     r.winners = computeWinners(r); r.status='revealed'; r.revealStep=1;
     broadcast(code);
+    if(db){
+      const entries = Object.entries(r.players)
+        .filter(([,p]) => p.contact)
+        .map(([name,p]) => {
+          const res = playerResults(r, name);
+          let validLines=0, invalidLines=0;
+          Object.keys(p.claims||{}).forEach(k=>{
+            if(k==='full'||k==='bonus') return;
+            const need=+k.replace('line','');
+            if(res.correctRows>=need) validLines++; else invalidLines++;
+          });
+          return {
+            contact: p.contact, name, zone: p.zone||'', roomCode: code,
+            correct: res.correctCount, wrong: res.wrongCount, netScore: res.netScore,
+            validLines, invalidLines, fullHouse: res.fullHouse,
+            bonus: r.winners.bonus===name, playedAt: Date.now()
+          };
+        });
+      if(entries.length) db.collection('game_history').insertMany(entries).catch(e=>console.log('history save failed:', e.message));
+    }
   });
 
   socket.on('host:nextWinner', ({code}) => {
@@ -205,9 +310,9 @@ io.on('connection', (socket) => {
     broadcast(code);
   });
 
-  socket.on('player:join', ({code,name,zone,avatar,clientId}, cb) => {
+  socket.on('player:join', ({code,name,zone,avatar,clientId,contact}, cb) => {
     const r = rooms[code]; if(!r){ cb&&cb({ok:false,error:'Room code મળ્યો નહિ.'}); return; }
-    name=(name||'').trim(); zone=(zone||'').trim();
+    name=(name||'').trim(); zone=(zone||'').trim(); contact=(contact||'').trim().toLowerCase();
     if(!name){ cb&&cb({ok:false,error:'નામ લખો.'}); return; }
     if(!r.clientMap) r.clientMap = {};
     let key = clientId && r.clientMap[clientId];
@@ -224,7 +329,7 @@ io.on('connection', (socket) => {
       let n=2; while(r.players[`${name} (${n})`]) n++;
       key = `${name} (${n})`;
     }
-    r.players[key] = { card: makeCard(r.questions), zone, avatar: avatar||'🦁', marks:{}, claims:{}, joinedAt: Date.now() };
+    r.players[key] = { card: makeCard(r.questions), zone, avatar: avatar||'🦁', contact: contact||null, marks:{}, claims:{}, joinedAt: Date.now() };
     if(clientId) r.clientMap[clientId] = key;
     socket.join(code);
     cb && cb({ok:true, room: publicRoom(r), yourKey:key});
@@ -244,7 +349,15 @@ io.on('connection', (socket) => {
     const r = rooms[code]; if(!r) return;
     const p = r.players[name]; if(!p) return;
     if(!p.claims) p.claims={};
-    if(!p.claims[type]) p.claims[type] = {ts: Date.now()};
+    const now = Date.now();
+    if(!p.claims[type]) p.claims[type] = {ts: now};
+    // Claiming "N Line" also auto-registers 1..N-1 Line claims (if not already made),
+    // so a player who goes straight for a higher line doesn't lose eligibility for
+    // the lower prizes in case only some of their lines turn out correct.
+    if(/^line[2-5]$/.test(type)){
+      const n = +type.replace('line','');
+      for(let k=1;k<n;k++){ const key='line'+k; if(!p.claims[key]) p.claims[key]={ts: now}; }
+    }
     broadcast(code);
   });
 });
