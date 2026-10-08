@@ -47,6 +47,33 @@ Upar "Render.com" wala steps follow karo — ek vaar deploy karya pachi link kay
 
 Banne option ma players fakt link kholi, potanu naam/zone/avatar nakhi, Room Code sathe join kari shakse — potana j mobile data/WiFi thi, host na network sathe judાયેલા hova ni jarur nahi.
 
+## Player Login / Profile / History Setup (Optional)
+
+Player hવે Email + OTP થી Login કરી શકે, Profile (Name + Avatar/Photo) બનાવી શકે, અને Past Games ની History જોઈ શકે. Aa feature **optional** che — setup na karo to pan game barobar chale, fakt login/history disable rahe.
+
+### Step 1 — Free MongoDB Atlas Database Banavo
+1. https://www.mongodb.com/cloud/atlas/register par free account banavo.
+2. "Build a Database" → **Free (M0)** tier select karo → koi pan region pasand karo → "Create".
+3. **Database User** banavo (username + password yaad rakho).
+4. **Network Access** ma "Allow Access from Anywhere" (`0.0.0.0/0`) add karo.
+5. "Connect" → "Drivers" → connection string copy karo, jem ke:
+   `mongodb+srv://username:password@cluster0.xxxxx.mongodb.net/`
+   (`password` ni jagya e tamaru sachu password nakho)
+
+### Step 2 — Free Gmail App Password Banavo (OTP email mokalva mate)
+1. https://myaccount.google.com/apppasswords par jaao (2-Step Verification chalu hovu joiye tamara Google account ma).
+2. "App Password" banavo (koi pan naam aapo, jem ke "Quiz App").
+3. 16-digit code malshe — e copy karo.
+
+### Step 3 — Render/Railway Par Environment Variables Set Karo
+Tamara hosting dashboard ma (Render: "Environment" tab, Railway: "Variables" tab) aa 4 umero:
+- `MONGODB_URI` = Step 1 no connection string
+- `EMAIL_USER` = tamaru Gmail address
+- `EMAIL_PASS` = Step 2 no 16-digit App Password
+- (`HOST_ID`/`HOST_PW` pehla thi hoy to e pan rakho)
+
+Save karta j service automatically redeploy thashe, ane Player Login/Profile/History chalu thai jashe.
+
 ## Host Login
 Default: **User ID:** `admin`, **Password:** `gyan2026`
 (Change karva mate `server.js` na top par `HOST_ID`/`HOST_PW` badlo, athva environment variables `HOST_ID`/`HOST_PW` set karo.)
