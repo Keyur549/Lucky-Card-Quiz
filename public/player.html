@@ -73,8 +73,14 @@ const EMOJI_LIST=['🦁','🐯','🐼','🐵','🦊','🐸','🐧','🦉','🐢'
 const WINNER_ORDER=['line1','line2','line3','line4','line5','full','bonus'];
 const WINNER_LABELS={line1:'1 Line',line2:'2 Line',line3:'3 Line',line4:'4 Line',line5:'5 Line',full:'Full House',bonus:'⭐ Bonus Winner'};
 const prefillCode=(new URLSearchParams(location.search).get('code')||'').toUpperCase();
-let state={code:null, name:null, room:null, joinErr:''};
-let audioOn=true;
+let state={
+  screen: localStorage.getItem('quizContact') ? 'join' : 'login',
+  contact: localStorage.getItem('quizContact') || '',
+  profile: JSON.parse(localStorage.getItem('quizProfile')||'{"name":"","avatar":""}'),
+  loginErr:'', otpSent:false, histLoading:false, history:[],
+  code:null, name:null, room:null, joinErr:''
+};
+let audioOn=true, uploadedPhoto=null;
 function getClientId(){
   let id = localStorage.getItem('quizClientId');
   if(!id){ id = 'c'+Date.now()+Math.random().toString(36).slice(2); localStorage.setItem('quizClientId', id); }
@@ -106,12 +112,75 @@ setInterval(()=>{ if('speechSynthesis' in window && window.speechSynthesis.pause
 let lastSpokenIdx=null;
 function maybeSpeak(r){ if(r.status==='question' && r.curIdx!=null && r.curIdx!==lastSpokenIdx){ lastSpokenIdx=r.curIdx; speakQuestion(r.questions[r.curIdx].q); } }
 
+function uiRequestOtp(){
+  const email=document.getElementById('loginEmail').value.trim();
+  state.loginErr='';
+  socket.emit('auth:requestOtp',{contact:email},(res)=>{
+    if(!res.ok){ state.loginErr=res.error; render(); return; }
+    state.contact=email.toLowerCase(); state.screen='otp'; render();
+  });
+}
+function uiVerifyOtp(){
+  const code=document.getElementById('otpCode').value.trim();
+  state.loginErr='';
+  socket.emit('auth:verifyOtp',{contact:state.contact, code},(res)=>{
+    if(!res.ok){ state.loginErr=res.error; render(); return; }
+    localStorage.setItem('quizContact', state.contact);
+    if(res.profile && res.profile.name){
+      state.profile={name:res.profile.name, avatar:res.profile.avatar||'🦁'};
+      localStorage.setItem('quizProfile', JSON.stringify(state.profile));
+      state.screen='join';
+    } else {
+      state.screen='profile';
+    }
+    render();
+  });
+}
+function handlePhotoUpload(ev){
+  const file=ev.target.files[0]; if(!file) return;
+  const img=new Image(); const reader=new FileReader();
+  reader.onload=e=>{
+    img.onload=()=>{
+      const c=document.createElement('canvas'); c.width=128; c.height=128;
+      const ctx=c.getContext('2d');
+      const s=Math.min(img.width,img.height);
+      ctx.drawImage(img,(img.width-s)/2,(img.height-s)/2,s,s,0,0,128,128);
+      uploadedPhoto=c.toDataURL('image/jpeg',0.75);
+      render();
+    };
+    img.src=e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+function uiSaveProfile(){
+  const name=document.getElementById('profName').value.trim();
+  if(!name){ alert('નામ લખો.'); return; }
+  const avatarSel=document.getElementById('profAvatar');
+  const avatar = uploadedPhoto || (avatarSel?avatarSel.value:'🦁');
+  socket.emit('profile:update',{contact:state.contact,name,avatar},(res)=>{
+    if(!res.ok){ alert(res.error||'Save નિષ્ફળ.'); return; }
+    state.profile={name,avatar}; localStorage.setItem('quizProfile', JSON.stringify(state.profile));
+    uploadedPhoto=null; state.screen='join'; render();
+  });
+}
+function uiShowHistory(){
+  state.screen='history'; state.histLoading=true; render();
+  socket.emit('history:get',{contact:state.contact},(res)=>{
+    state.histLoading=false; state.history=(res&&res.history)||[]; render();
+  });
+}
+function uiLogout(){
+  localStorage.removeItem('quizContact'); localStorage.removeItem('quizProfile');
+  state.contact=''; state.profile={name:'',avatar:''}; state.screen='login'; render();
+}
+function uiEditProfile(){ state.screen='profile'; render(); }
+
 function uiJoinRoom(){
-  const name=document.getElementById('joinName').value;
+  const name=state.profile.name;
   const zone=document.getElementById('joinZone').value;
-  const avatar=document.getElementById('joinAvatar').value;
+  const avatar=state.profile.avatar;
   const code=document.getElementById('joinCode').value.trim().toUpperCase();
-  socket.emit('player:join',{code,name,zone,avatar,clientId:getClientId()},(res)=>{
+  socket.emit('player:join',{code,name,zone,avatar,clientId:getClientId(),contact:state.contact},(res)=>{
     if(!res.ok){ state.joinErr=res.error; render(); return; }
     state.code=code; state.name=res.yourKey; state.joinErr='';
     state.room=res.room; socket.emit('subscribe',{code}); render();
@@ -176,14 +245,66 @@ function winnerBannerHTML(r){
 function render(){
   const el=document.getElementById('app');
   if(!state.code){
+    if(state.screen==='login'){
+      el.innerHTML=`<h1>🎴 Player Login</h1>
+      <div class="card">
+        <div class="muted">તમારો Email નાખો — OTP મોકલાશે</div>
+        <input id="loginEmail" type="email" placeholder="તમારો Email">
+        <button class="btn secondary" onclick="uiRequestOtp()">OTP મોકલો</button>
+        ${state.loginErr?`<div class="muted" style="color:var(--red)">${esc(state.loginErr)}</div>`:''}
+      </div>`;
+      return;
+    }
+    if(state.screen==='otp'){
+      el.innerHTML=`<h1>🔐 OTP નાખો</h1>
+      <div class="card">
+        <div class="muted">${esc(state.contact)} પર OTP મોકલ્યો છે</div>
+        <input id="otpCode" inputmode="numeric" maxlength="6" placeholder="6-અંકનો OTP">
+        <button class="btn secondary" onclick="uiVerifyOtp()">Verify કરો</button>
+        <button class="btn ghost" onclick="state.screen='login';render()">⬅ Email બદલો</button>
+        ${state.loginErr?`<div class="muted" style="color:var(--red)">${esc(state.loginErr)}</div>`:''}
+      </div>`;
+      return;
+    }
+    if(state.screen==='profile'){
+      const preview=uploadedPhoto||state.profile.avatar;
+      const isImg=preview && preview.startsWith('data:');
+      el.innerHTML=`<h1>👤 Profile બનાવો</h1>
+      <div class="card">
+        <input id="profName" placeholder="તમારું નામ" value="${esc(state.profile.name||'')}">
+        <div class="muted">Avatar પસંદ કરો અથવા Photo Upload કરો</div>
+        <select id="profAvatar">${EMOJI_LIST.map(e=>`<option value="${e}" ${state.profile.avatar===e?'selected':''}>${e}</option>`).join('')}</select>
+        <input type="file" accept="image/*" onchange="handlePhotoUpload(event)">
+        ${preview?`<div style="margin:8px 0">${isImg?`<img src="${preview}" style="width:64px;height:64px;border-radius:50%;object-fit:cover">`:`<span style="font-size:2.5rem">${preview}</span>`}</div>`:''}
+        <button class="btn secondary" onclick="uiSaveProfile()">Save કરો</button>
+      </div>`;
+      return;
+    }
+    if(state.screen==='history'){
+      el.innerHTML=`<h1>📜 તમારો History</h1>
+      <div class="card">
+        <button class="btn ghost" onclick="state.screen='join';render()">⬅ Back</button>
+        ${state.histLoading?'<div class="muted">Loading…</div>':
+          state.history.length?`<table class="stbl"><tr><th>Room</th><th>Zone</th><th>Correct</th><th>Wrong</th><th>Net</th><th>Full House</th><th>Bonus</th><th>Date</th></tr>
+          ${state.history.map(h=>`<tr><td>${esc(h.roomCode)}</td><td>${esc(h.zone||'')}</td><td align="center">${h.correct}</td><td align="center">${h.wrong}</td><td align="center">${h.netScore}</td><td align="center">${h.fullHouse?'✔':'—'}</td><td align="center">${h.bonus?'⭐':'—'}</td><td>${new Date(h.playedAt).toLocaleDateString('en-IN')}</td></tr>`).join('')}
+          </table>`:'<div class="muted">હજુ કોઈ Game રમ્યા નથી.</div>'}
+      </div>`;
+      return;
+    }
+    // state.screen === 'join'
+    const av=state.profile.avatar||'🦁'; const isImg=av.startsWith('data:');
     el.innerHTML=`<h1>🎴 Player Join</h1>
     <div class="card">
-      <input id="joinName" placeholder="તમારું નામ">
+      <div class="row">${isImg?`<img src="${av}" style="width:40px;height:40px;border-radius:50%;object-fit:cover">`:`<span style="font-size:2rem">${av}</span>`}
+      <div><b>${esc(state.profile.name)}</b><div class="muted">${esc(state.contact)}</div></div></div>
+      <button class="btn ghost" onclick="uiEditProfile()">✏️ Profile Edit</button>
+      <button class="btn ghost" onclick="uiShowHistory()">📜 Past History</button>
+      <button class="btn ghost" onclick="uiLogout()">🚪 Logout</button>
+    </div>
+    <div class="card">
       <input id="joinZone" placeholder="Zone નું નામ">
-      <div class="muted">Avatar પસંદ કરો</div>
-      <select id="joinAvatar">${EMOJI_LIST.map(e=>`<option value="${e}">${e}</option>`).join('')}</select>
       <input id="joinCode" placeholder="Room Code" value="${esc(prefillCode)}">
-      <button class="btn secondary" onclick="uiJoinRoom()">Join</button>
+      <button class="btn secondary" onclick="uiJoinRoom()">Join Game</button>
       ${state.joinErr?`<div class="muted" style="color:var(--red)">${esc(state.joinErr)}</div>`:''}
     </div>`;
     return;
